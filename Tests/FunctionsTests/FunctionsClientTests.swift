@@ -1,3 +1,4 @@
+import Alamofire
 import ConcurrencyExtras
 import HTTPTypes
 import InlineSnapshotTesting
@@ -22,9 +23,7 @@ final class FunctionsClientTests: XCTestCase {
     return sessionConfiguration
   }()
 
-  lazy var session = URLSession(configuration: sessionConfiguration)
-
-  var region: String?
+  var region: FunctionRegion?
 
   lazy var sut = FunctionsClient(
     url: url,
@@ -32,10 +31,7 @@ final class FunctionsClientTests: XCTestCase {
       "apikey": apiKey
     ],
     region: region,
-    fetch: { request in
-      try await self.session.data(for: request)
-    },
-    sessionConfiguration: sessionConfiguration
+    alamofireSession: Alamofire.Session(configuration: sessionConfiguration)
   )
 
   override func setUp() {
@@ -49,7 +45,7 @@ final class FunctionsClientTests: XCTestCase {
       headers: ["apikey": apiKey],
       region: .saEast1
     )
-    XCTAssertEqual(client.region, "sa-east-1")
+    XCTAssertEqual(client.region?.rawValue, "sa-east-1")
 
     XCTAssertEqual(client.headers[.init("apikey")!], apiKey)
     XCTAssertNotNil(client.headers[.init("X-Client-Info")!])
@@ -160,7 +156,7 @@ final class FunctionsClientTests: XCTestCase {
   }
 
   func testInvokeWithRegionDefinedInClient() async throws {
-    region = FunctionRegion.caCentral1.rawValue
+    region = FunctionRegion.caCentral1
 
     Mock(
       url: url.appendingPathComponent("hello-world"),

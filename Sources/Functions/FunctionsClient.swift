@@ -1,6 +1,8 @@
+import Alamofire
 import ConcurrencyExtras
 import Foundation
 import HTTPTypes
+import Helpers
 
 #if canImport(FoundationNetworking)
   import FoundationNetworking
@@ -11,9 +13,10 @@ let version = Helpers.version
 /// An actor representing a client for invoking functions.
 public final class FunctionsClient: Sendable {
   /// Fetch handler used to make requests.
-  public typealias FetchHandler = @Sendable (_ request: URLRequest) async throws -> (
-    Data, URLResponse
-  )
+  public typealias FetchHandler =
+    @Sendable (_ request: URLRequest) async throws -> (
+      Data, URLResponse
+    )
 
   /// Request idle timeout: 150s (If an Edge Function doesn't send a response before the timeout, 504 Gateway Timeout will be returned)
   ///
@@ -24,7 +27,7 @@ public final class FunctionsClient: Sendable {
   let url: URL
 
   /// The Region to invoke the functions in.
-  let region: String?
+  let region: FunctionRegion?
 
   struct MutableState {
     /// Headers to be included in the requests.
@@ -33,7 +36,6 @@ public final class FunctionsClient: Sendable {
 
   private let http: any HTTPClientType
   private let mutableState = LockIsolated(MutableState())
-  private let sessionConfiguration: URLSessionConfiguration
 
   var headers: HTTPFields {
     mutableState.headers
@@ -51,55 +53,57 @@ public final class FunctionsClient: Sendable {
   public convenience init(
     url: URL,
     headers: [String: String] = [:],
-    region: String? = nil,
+    region: FunctionRegion? = nil,
     logger: (any SupabaseLogger)? = nil,
-    fetch: @escaping FetchHandler = { try await URLSession.shared.data(for: $0) }
+    alamofireSession: Alamofire.Session = .default
   ) {
     self.init(
       url: url,
       headers: headers,
       region: region,
       logger: logger,
-      fetch: fetch,
-      sessionConfiguration: .default
+      fetch: nil,
+      alamofireSession: alamofireSession
     )
   }
 
   convenience init(
     url: URL,
     headers: [String: String] = [:],
-    region: String? = nil,
+    region: FunctionRegion? = nil,
     logger: (any SupabaseLogger)? = nil,
-    fetch: @escaping FetchHandler = { try await URLSession.shared.data(for: $0) },
-    sessionConfiguration: URLSessionConfiguration
+    fetch: FetchHandler?,
+    alamofireSession: Alamofire.Session
   ) {
     var interceptors: [any HTTPClientInterceptor] = []
     if let logger {
       interceptors.append(LoggerInterceptor(logger: logger))
     }
 
-    let http = HTTPClient(fetch: fetch, interceptors: interceptors)
+    let http: any HTTPClientType =
+      if let fetch {
+        HTTPClient(fetch: fetch, interceptors: interceptors)
+      } else {
+        AlamofireHTTPClient(session: alamofireSession)
+      }
 
     self.init(
       url: url,
       headers: headers,
       region: region,
-      http: http,
-      sessionConfiguration: sessionConfiguration
+      http: http
     )
   }
 
   init(
     url: URL,
     headers: [String: String],
-    region: String?,
-    http: any HTTPClientType,
-    sessionConfiguration: URLSessionConfiguration = .default
+    region: FunctionRegion?,
+    http: any HTTPClientType
   ) {
     self.url = url
     self.region = region
     self.http = http
-    self.sessionConfiguration = sessionConfiguration
 
     mutableState.withValue {
       $0.headers = HTTPFields(headers)
@@ -107,24 +111,6 @@ public final class FunctionsClient: Sendable {
         $0.headers[.xClientInfo] = "functions-swift/\(version)"
       }
     }
-  }
-
-  /// Initializes a new instance of `FunctionsClient`.
-  ///
-  /// - Parameters:
-  ///   - url: The base URL for the functions.
-  ///   - headers: Headers to be included in the requests. (Default: empty dictionary)
-  ///   - region: The Region to invoke the functions in.
-  ///   - logger: SupabaseLogger instance to use.
-  ///   - fetch: The fetch handler used to make requests. (Default: URLSession.shared.data(for:))
-  public convenience init(
-    url: URL,
-    headers: [String: String] = [:],
-    region: FunctionRegion? = nil,
-    logger: (any SupabaseLogger)? = nil,
-    fetch: @escaping FetchHandler = { try await URLSession.shared.data(for: $0) }
-  ) {
-    self.init(url: url, headers: headers, region: region?.rawValue, logger: logger, fetch: fetch)
   }
 
   /// Updates the authorization header.
@@ -222,25 +208,8 @@ public final class FunctionsClient: Sendable {
     _ functionName: String,
     options invokeOptions: FunctionInvokeOptions = .init()
   ) -> AsyncThrowingStream<Data, any Error> {
-    let (stream, continuation) = AsyncThrowingStream<Data, any Error>.makeStream()
-    let delegate = StreamResponseDelegate(continuation: continuation)
-
-    let session = URLSession(
-      configuration: sessionConfiguration, delegate: delegate, delegateQueue: nil)
-
-    let urlRequest = buildRequest(functionName: functionName, options: invokeOptions).urlRequest
-
-    let task = session.dataTask(with: urlRequest)
-    task.resume()
-
-    continuation.onTermination = { _ in
-      task.cancel()
-
-      // Hold a strong reference to delegate until continuation terminates.
-      _ = delegate
-    }
-
-    return stream
+    let request = buildRequest(functionName: functionName, options: invokeOptions)
+    return http.stream(request)
   }
 
   private func buildRequest(functionName: String, options: FunctionInvokeOptions)
@@ -257,8 +226,8 @@ public final class FunctionsClient: Sendable {
     )
 
     if let region = options.region ?? region {
-      request.headers[.xRegion] = region
-      query.appendOrUpdate(URLQueryItem(name: "forceFunctionRegion", value: region))
+      request.headers[.xRegion] = region.rawValue
+      query.appendOrUpdate(URLQueryItem(name: "forceFunctionRegion", value: region.rawValue))
       request.query = query
     }
 
