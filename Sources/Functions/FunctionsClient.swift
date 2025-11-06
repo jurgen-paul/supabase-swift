@@ -1,4 +1,3 @@
-import ConcurrencyExtras
 import Foundation
 import HTTPTypes
 
@@ -9,11 +8,12 @@ import HTTPTypes
 let version = Helpers.version
 
 /// An actor representing a client for invoking functions.
-public final class FunctionsClient: Sendable {
+public actor FunctionsClient {
   /// Fetch handler used to make requests.
-  public typealias FetchHandler = @Sendable (_ request: URLRequest) async throws -> (
-    Data, URLResponse
-  )
+  public typealias FetchHandler =
+    @Sendable (_ request: URLRequest) async throws -> (
+      Data, URLResponse
+    )
 
   /// Request idle timeout: 150s (If an Edge Function doesn't send a response before the timeout, 504 Gateway Timeout will be returned)
   ///
@@ -24,20 +24,13 @@ public final class FunctionsClient: Sendable {
   let url: URL
 
   /// The Region to invoke the functions in.
-  let region: String?
+  let region: FunctionRegion?
 
-  struct MutableState {
-    /// Headers to be included in the requests.
-    var headers = HTTPFields()
-  }
+  /// Headers to be included in the requests.
+  var headers = HTTPFields()
 
   private let http: any HTTPClientType
-  private let mutableState = LockIsolated(MutableState())
   private let sessionConfiguration: URLSessionConfiguration
-
-  var headers: HTTPFields {
-    mutableState.headers
-  }
 
   /// Initializes a new instance of `FunctionsClient`.
   ///
@@ -47,11 +40,10 @@ public final class FunctionsClient: Sendable {
   ///   - region: The Region to invoke the functions in.
   ///   - logger: SupabaseLogger instance to use.
   ///   - fetch: The fetch handler used to make requests. (Default: URLSession.shared.data(for:))
-  @_disfavoredOverload
-  public convenience init(
+  public init(
     url: URL,
     headers: [String: String] = [:],
-    region: String? = nil,
+    region: FunctionRegion? = nil,
     logger: (any SupabaseLogger)? = nil,
     fetch: @escaping FetchHandler = { try await URLSession.shared.data(for: $0) }
   ) {
@@ -65,10 +57,10 @@ public final class FunctionsClient: Sendable {
     )
   }
 
-  convenience init(
+  init(
     url: URL,
     headers: [String: String] = [:],
-    region: String? = nil,
+    region: FunctionRegion? = nil,
     logger: (any SupabaseLogger)? = nil,
     fetch: @escaping FetchHandler = { try await URLSession.shared.data(for: $0) },
     sessionConfiguration: URLSessionConfiguration
@@ -92,7 +84,7 @@ public final class FunctionsClient: Sendable {
   init(
     url: URL,
     headers: [String: String],
-    region: String?,
+    region: FunctionRegion?,
     http: any HTTPClientType,
     sessionConfiguration: URLSessionConfiguration = .default
   ) {
@@ -101,42 +93,20 @@ public final class FunctionsClient: Sendable {
     self.http = http
     self.sessionConfiguration = sessionConfiguration
 
-    mutableState.withValue {
-      $0.headers = HTTPFields(headers)
-      if $0.headers[.xClientInfo] == nil {
-        $0.headers[.xClientInfo] = "functions-swift/\(version)"
-      }
+    self.headers = HTTPFields(headers)
+    if self.headers[.xClientInfo] == nil {
+      self.headers[.xClientInfo] = "functions-swift/\(version)"
     }
-  }
-
-  /// Initializes a new instance of `FunctionsClient`.
-  ///
-  /// - Parameters:
-  ///   - url: The base URL for the functions.
-  ///   - headers: Headers to be included in the requests. (Default: empty dictionary)
-  ///   - region: The Region to invoke the functions in.
-  ///   - logger: SupabaseLogger instance to use.
-  ///   - fetch: The fetch handler used to make requests. (Default: URLSession.shared.data(for:))
-  public convenience init(
-    url: URL,
-    headers: [String: String] = [:],
-    region: FunctionRegion? = nil,
-    logger: (any SupabaseLogger)? = nil,
-    fetch: @escaping FetchHandler = { try await URLSession.shared.data(for: $0) }
-  ) {
-    self.init(url: url, headers: headers, region: region?.rawValue, logger: logger, fetch: fetch)
   }
 
   /// Updates the authorization header.
   ///
   /// - Parameter token: The new JWT token sent in the authorization header.
   public func setAuth(token: String?) {
-    mutableState.withValue {
-      if let token {
-        $0.headers[.authorization] = "Bearer \(token)"
-      } else {
-        $0.headers[.authorization] = nil
-      }
+    if let token {
+      headers[.authorization] = "Bearer \(token)"
+    } else {
+      headers[.authorization] = nil
     }
   }
 
@@ -154,7 +124,8 @@ public final class FunctionsClient: Sendable {
     decode: (Data, HTTPURLResponse) throws -> Response
   ) async throws -> Response {
     let response = try await rawInvoke(
-      functionName: functionName, invokeOptions: options
+      functionName: functionName,
+      invokeOptions: options
     )
     return try decode(response.data, response.underlyingResponse)
   }
@@ -226,7 +197,10 @@ public final class FunctionsClient: Sendable {
     let delegate = StreamResponseDelegate(continuation: continuation)
 
     let session = URLSession(
-      configuration: sessionConfiguration, delegate: delegate, delegateQueue: nil)
+      configuration: sessionConfiguration,
+      delegate: delegate,
+      delegateQueue: nil
+    )
 
     let urlRequest = buildRequest(functionName: functionName, options: invokeOptions).urlRequest
 
@@ -251,14 +225,14 @@ public final class FunctionsClient: Sendable {
       url: url.appendingPathComponent(functionName),
       method: FunctionInvokeOptions.httpMethod(options.method) ?? .post,
       query: query,
-      headers: mutableState.headers.merging(with: options.headers),
+      headers: headers.merging(with: options.headers),
       body: options.body,
       timeoutInterval: FunctionsClient.requestIdleTimeout
     )
 
     if let region = options.region ?? region {
-      request.headers[.xRegion] = region
-      query.appendOrUpdate(URLQueryItem(name: "forceFunctionRegion", value: region))
+      request.headers[.xRegion] = region.rawValue
+      query.appendOrUpdate(URLQueryItem(name: "forceFunctionRegion", value: region.rawValue))
       request.query = query
     }
 
@@ -282,7 +256,9 @@ final class StreamResponseDelegate: NSObject, URLSessionDataDelegate, Sendable {
   }
 
   func urlSession(
-    _: URLSession, dataTask _: URLSessionDataTask, didReceive response: URLResponse,
+    _: URLSession,
+    dataTask _: URLSessionDataTask,
+    didReceive response: URLResponse,
     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
   ) {
     defer {

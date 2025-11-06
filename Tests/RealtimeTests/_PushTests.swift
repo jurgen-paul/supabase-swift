@@ -7,19 +7,18 @@
 
 import ConcurrencyExtras
 import TestHelpers
-import XCTest
+@preconcurrency import XCTest
 
 @testable import Realtime
 
 #if !os(Android) && !os(Linux) && !os(Windows)
   @MainActor
-  @available(macOS 13.0, iOS 16.0, watchOS 9.0, tvOS 16.0, *)
   final class _PushTests: XCTestCase {
     var ws: FakeWebSocket!
     var socket: RealtimeClientV2!
 
-    override func setUp() {
-      super.setUp()
+    override func setUp() async throws {
+      try await super.setUp()
 
       let (client, server) = FakeWebSocket.fakes()
       ws = server

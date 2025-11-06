@@ -60,7 +60,7 @@ private actor GlobalJWKSCache {
 private let globalJWKSCache = GlobalJWKSCache()
 
 public actor AuthClient {
-  static var globalClientID = 0
+  static let globalClientID = LockIsolated(0)
   nonisolated let clientID: AuthClientID
 
   nonisolated private var api: APIClient { Dependencies[clientID].api }
@@ -122,8 +122,7 @@ public actor AuthClient {
   /// - Parameters:
   ///   - configuration: The client configuration.
   public init(configuration: Configuration) {
-    AuthClient.globalClientID += 1
-    clientID = AuthClient.globalClientID
+    clientID = AuthClient.globalClientID.withValue { $0 += 1; return $0 }
 
     Dependencies[clientID] = Dependencies(
       configuration: configuration,
@@ -702,7 +701,6 @@ public actor AuthClient {
     /// - Note: This method support the PKCE flow.
     /// - Warning: Do not call `start()` on the `ASWebAuthenticationSession` object inside the
     /// `configure` closure, as the method implementation calls it already.
-    @available(watchOS 6.2, tvOS 16.0, *)
     @discardableResult
     public func signInWithOAuth(
       provider: Provider,
